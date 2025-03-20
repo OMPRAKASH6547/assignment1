@@ -1,59 +1,72 @@
-const { processImages } = require("../services/imageService");
-const ImageProcessing = require("../models/ImageProcessing");
-const csv = require("csv-parser");
-const fs = require("fs");
-const path = require("path");
-const { v4: uuidv4 } = require("uuid");
+const Image = require('../models/imageModel');
+const { processImages } = require('../services/imageService');
+const uuid = require('uuid');
+const multer = require('multer');
+const csvParser = require('csv-parser');
+const fs = require('fs');
 
-// Upload CSV and start processing
-async function uploadCsv(req, res) {
-    if (!req.file) {
-        return res.status(400).json({ error: "CSV file is required" });
+// Middleware to handle CSV file upload
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/');
+    },
+    filename: (req, file, cb) => {
+        cb(null, Date.now() + '-' + file.originalname);
     }
+});
 
-    const requestId = uuidv4();
-    const processingData = {
-        requestId,
-        status: "pending",
-        products: []
-    };
+const upload = multer({ storage }).single('csvFile');
 
-    const filePath = path.join(__dirname, "../uploads", req.file.filename);
+// Upload API: Accepts the CSV, validates, and returns request ID
+exports.uploadCSV = (req, res) => {
+    upload(req, res, (err) => {
+        if (err) return res.status(500).send({ message: 'Error in file upload' });
 
-    // Read and parse the CSV
-    fs.createReadStream(filePath)
-        .pipe(csv())
-        .on("data", (row) => {
-            const imageUrls = row["Input Image Urls"].split(",").map(url => url.trim());
-            processingData.products.push({ productName: row["Product Name"], imageUrls });
-        })
-        .on("end", async () => {
-            try {
-                // Save the processing data to the DB
-                await new ImageProcessing(processingData).save();
-                // Process the images asynchronously
-                processImages(requestId);
-                res.status(200).json({ requestId });
-            } catch (error) {
-                console.error("Error saving data: ", error);
-                res.status(500).json({ error: "Failed to save data" });
-            }
-        });
-}
+        const csvFilePath = req.file.path;
+        const products = [];
 
-// Check the status of image processing
-async function checkStatus(req, res) {
+        // Read CSV file and parse data
+        fs.createReadStream(csvFilePath)
+            .pipe(csvParser())
+            .on('data', (row) => {
+                const { 'Product Name': productName, 'Input Image Urls': inputImageUrls } = row;
+                products.push({ productName, inputImageUrls: inputImageUrls.split(',') });
+            })
+            .on('end', () => {
+                // Create an entry in the database for this request
+                const requestId = uuid.v4();
+                const newImageEntry = new Image({
+                    productName: products[0]?.productName, // assuming all have same product name
+                    inputImageUrls: products.flatMap((p) => p.inputImageUrls),
+                    requestId,
+                    status: 'pending'
+                });
+
+                newImageEntry.save()
+                    .then(() => {
+                        // Process images asynchronously
+                        processImages(requestId, products);
+                        res.status(200).json({ requestId });
+                    })
+                    .catch((err) => {
+                        res.status(500).json({ message: 'Error saving to database', error: err.message });
+                    });
+            });
+    });
+};
+
+// Status API: Query processing status with request ID
+exports.getProcessingStatus = (req, res) => {
     const { requestId } = req.params;
-    const processingStatus = await ImageProcessing.findOne({ requestId });
 
-    if (!processingStatus) {
-        return res.status(404).json({ error: "Request not found" });
-    }
-
-    res.status(200).json(processingStatus);
-}
-
-module.exports = {
-    uploadCsv,
-    checkStatus
+    Image.findOne({ requestId })
+        .then((imageData) => {
+            if (!imageData) {
+                return res.status(404).json({ message: 'Request not found' });
+            }
+            res.status(200).json({ status: imageData.status });
+        })
+        .catch((err) => {
+            res.status(500).json({ message: 'Error fetching status', error: err.message });
+        });
 };

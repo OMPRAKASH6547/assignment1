@@ -1,50 +1,53 @@
-const axios = require("axios");
-const sharp = require("sharp");
-const path = require("path");
-const fs = require("fs");
-const uuidv4 = require("uuid").v4;
-const ImageProcessing = require("../models/ImageProcessing");
+const sharp = require('sharp');
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const Image = require('../models/imageModel');
 
-// Process images and update status in DB
-async function processImages(requestId) {
-    const processingData = await ImageProcessing.findOne({ requestId });
-
-    if (!processingData) {
-        throw new Error("Request not found");
-    }
-
-    // Update status to processing
-    await ImageProcessing.updateOne({ requestId }, { $set: { status: "processing" } });
-
-    for (const product of processingData.products) {
-        for (const imageUrl of product.imageUrls) {
+const processImages = (requestId, products) => {
+    products.forEach(async (product) => {
+        for (const url of product.inputImageUrls) {
             try {
-                const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
-                const imageBuffer = Buffer.from(response.data);
-                const outputImagePath = path.join(__dirname, "../processed_images", `${uuidv4()}.jpg`);
+                const imageBuffer = await axios.get(url, { responseType: 'arraybuffer' });
+                const outputFilePath = path.join(__dirname, 'uploads', `${Date.now()}-compressed.jpg`);
 
-                // Compress the image by 50%
-                await sharp(imageBuffer).jpeg({ quality: 50 }).toFile(outputImagePath);
+                await sharp(imageBuffer.data)
+                    .resize({ width: 1000 })  // Example resizing
+                    .jpeg({ quality: 50 })  // Compress by 50% quality
+                    .toFile(outputFilePath);
 
-                // Update DB with output URL
-                await ImageProcessing.updateOne(
-                    { requestId, "products.productName": product.productName, "products.imageUrls": imageUrl },
-                    { $set: { "products.$.status": "processed", "products.$.outputUrl": outputImagePath } }
+                const processedImageUrl = `https://yourserver.com/uploads/${path.basename(outputFilePath)}`;
+
+                // Save processed image info to the DB
+                await Image.updateOne(
+                    { requestId },
+                    {
+                        $push: {
+                            processedImages: { url: processedImageUrl, status: 'processed' }
+                        }
+                    }
                 );
             } catch (error) {
-                console.error(`Error processing image ${imageUrl}: ${error.message}`);
-                await ImageProcessing.updateOne(
-                    { requestId, "products.productName": product.productName, "products.imageUrls": imageUrl },
-                    { $set: { "products.$.status": "failed" } }
+                await Image.updateOne(
+                    { requestId },
+                    {
+                        $push: {
+                            processedImages: { url: url, status: 'failed', error: error.message }
+                        }
+                    }
                 );
             }
         }
-    }
 
-    // Once all images are processed, set the status to completed
-    await ImageProcessing.updateOne({ requestId }, { $set: { status: "completed" } });
-}
+        // Update status to completed
+        await Image.updateOne({ requestId }, { status: 'completed' });
 
-module.exports = {
-    processImages
+        // Optionally, trigger webhook
+        const imageData = await Image.findOne({ requestId });
+        if (imageData?.webhookUrl) {
+            axios.post(imageData.webhookUrl, { message: 'Processing complete', requestId });
+        }
+    });
 };
+
+module.exports = { processImages };
