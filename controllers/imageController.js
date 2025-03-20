@@ -4,6 +4,7 @@ const uuid = require('uuid');
 const multer = require('multer');
 const csvParser = require('csv-parser');
 const fs = require('fs');
+const path = require('path')
 
 // Middleware to handle CSV file upload
 const storage = multer.diskStorage({
@@ -18,7 +19,7 @@ const storage = multer.diskStorage({
 const upload = multer({ storage }).single('csvFile');
 
 // Upload API: Accepts the CSV, validates, and returns request ID
-exports.uploadCSV = (req, res) => {
+const uploadCSV = (req, res) => {
     upload(req, res, (err) => {
         if (err) return res.status(500).send({ message: 'Error in file upload' });
 
@@ -56,7 +57,7 @@ exports.uploadCSV = (req, res) => {
 };
 
 // Status API: Query processing status with request ID
-exports.getProcessingStatus = (req, res) => {
+const getProcessingStatus = (req, res) => {
     const { requestId } = req.params;
 
     Image.findOne({ requestId })
@@ -70,3 +71,8 @@ exports.getProcessingStatus = (req, res) => {
             res.status(500).json({ message: 'Error fetching status', error: err.message });
         });
 };
+module.exports = {
+    getProcessingStatus,
+    uploadCSV
+
+}
